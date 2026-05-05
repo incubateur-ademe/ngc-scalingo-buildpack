@@ -33,6 +33,7 @@ indent() {
 }
 
 header() {
+  echo ""
   echo "-----> ${*}"
 }
 
@@ -61,9 +62,7 @@ if [ -z "${ROOT_DIR}" ]; then
   exit 1
 fi
 
-# Read the workspace package name from the app's package.json.
-# grep, not node — Node.js is not installed yet at this point.
-PNPM_FILTER=$(grep -oP '"name"\s*:\s*"\K[^"]+' "${BUILD_DIR}/package.json" 2>/dev/null | head -1)
+PNPM_FILTER=$(jq -r '.name // empty' "${BUILD_DIR}/package.json")
 if [ -z "${PNPM_FILTER}" ]; then
   header "ERROR: could not read package name from ${BUILD_DIR}/package.json"
   exit 1
@@ -72,26 +71,29 @@ fi
 header "Deploying workspace package: ${PNPM_FILTER}"
 
 # ----- install Node.js -------------------------------------------------------
-# Read the required version from the root package.json and install it.
+# Reads the exact version from engines.node in package.json, then resolves
+# the latest matching patch from the Node.js release index.
 
-NODE_VERSION=$(grep -oP '"node"\s*:\s*"\K[^"]+' "${ROOT_DIR}/package.json" 2>/dev/null | head -1)
-NODE_MAJOR=$(echo "${NODE_VERSION:-22}" | grep -oP '^\d+')
+NODE_VERSION=$(jq -r '.engines.node // "22"' "${ROOT_DIR}/package.json")
 NODE_DIR="${ROOT_DIR}/.scalingo/node"
 
 if [ ! -f "${NODE_DIR}/bin/node" ]; then
-  header "Installing Node.js ${NODE_MAJOR}.x"
+  header "Installing Node.js ${NODE_VERSION}"
   mkdir -p "${NODE_DIR}"
 
-  NODE_LATEST=$(curl -sSf --retry 3 "https://nodejs.org/download/release/latest-v${NODE_MAJOR}.x/SHASUMS256.txt" 2>/dev/null | head -1 | grep -oP 'v\K[\d.]+' || echo "")
-  if [ -z "${NODE_LATEST}" ]; then
-    echo "       Could not resolve latest Node.js v${NODE_MAJOR}.x — using system node"
-  else
-    echo "       Downloading Node.js ${NODE_LATEST}..."
-    curl -sSf --retry 3 --connect-timeout 10 \
-      "https://nodejs.org/dist/v${NODE_LATEST}/node-v${NODE_LATEST}-linux-x64.tar.gz" \
-      | tar xz --strip-components=1 -C "${NODE_DIR}" 2>&1 | indent
-    echo "       Node.js $( "${NODE_DIR}/bin/node" --version ) installed"
+  NODE_FULL=$(curl -sSf --retry 3 "https://nodejs.org/download/release/index.json" \
+    | jq -r "[.[].version[1:]] | map(select(startswith(\"${NODE_VERSION}.\"))) | first // empty" 2>/dev/null)
+
+  if [ -z "${NODE_FULL}" ]; then
+    header "ERROR: could not resolve Node.js ${NODE_VERSION}"
+    exit 1
   fi
+
+  echo "Downloading Node.js ${NODE_FULL}..." | indent
+  curl -sSf --retry 3 --connect-timeout 10 \
+    "https://nodejs.org/dist/v${NODE_FULL}/node-v${NODE_FULL}-linux-x64.tar.gz" \
+    | tar xz --strip-components=1 -C "${NODE_DIR}" 2>&1 | indent
+  echo "Node.js $( "${NODE_DIR}/bin/node" --version ) installed" | indent
 fi
 
 export PATH="${NODE_DIR}/bin:${PATH}"
@@ -100,7 +102,7 @@ export PATH="${NODE_DIR}/bin:${PATH}"
 header "Installing pnpm"
 
 corepack enable pnpm 2>&1 | indent
-echo "       pnpm $(pnpm --version)"
+echo "pnpm $(pnpm --version)" | indent
 
 # ----- install dependencies --------------------------------------------------
 header "Installing dependencies"
@@ -113,48 +115,59 @@ header "Building application"
 
 pnpm --filter="${PNPM_FILTER}" run build 2>&1 | indent
 
-# ----- deploy (production-only, self-contained) ------------------------------
-header "Creating production deployment (pnpm deploy)"
+# ----- deploy ----------------------------------------------------------------
 
 DEPLOY_DIR="/tmp/pnpm-deploy"
 rm -rf "${DEPLOY_DIR}"
 mkdir -p "${DEPLOY_DIR}"
 
-pnpm --filter="${PNPM_FILTER}" --prod deploy "${DEPLOY_DIR}" 2>&1 | indent
+if [ -d "${BUILD_DIR}/.next/standalone" ]; then
+  # Next.js standalone mode — the build already produced a self-contained
+  # output with its own node_modules.  No pnpm deploy needed.
+  # In a monorepo, node_modules lives at .next/standalone/node_modules/,
+  # not inside the app subdirectory — copy the full tree.
+  header "Using Next.js standalone output"
+  cp -r "${BUILD_DIR}/.next/standalone"/. "${DEPLOY_DIR}/"
+else
+  # Regular Node app — use pnpm deploy for production-only dependencies.
+  header "Creating production deployment (pnpm deploy)"
 
-# ----- copy build artifacts --------------------------------------------------
-# pnpm deploy respects .gitignore, so dist/ and .next/ are excluded.
-# BUILD_DIR is the source package directory (e.g. apps/server).
+  pnpm --filter="${PNPM_FILTER}" --prod deploy "${DEPLOY_DIR}" 2>&1 | indent
 
-header "Copying build artifacts"
-
-# dist/  (TypeScript output — server)
-if [ -d "${BUILD_DIR}/dist" ]; then
-  echo "       dist/"
-  cp -r "${BUILD_DIR}/dist" "${DEPLOY_DIR}/"
+  # pnpm deploy leaves a content-addressable store (.local) and build caches
+  # (.cache) inside the deploy output.  They're not needed at runtime.
+  rm -rf "${DEPLOY_DIR}/.local" "${DEPLOY_DIR}/.cache"
 fi
 
-# .next/ (Next.js output — site)
-if [ -d "${BUILD_DIR}/.next" ]; then
-  echo "       .next/"
-  cp -r "${BUILD_DIR}/.next" "${DEPLOY_DIR}/"
+# The standalone output doesn't include the Procfile — copy it from the source.
+if [ -f "${BUILD_DIR}/Procfile" ] && [ ! -f "${DEPLOY_DIR}/Procfile" ]; then
+  cp "${BUILD_DIR}/Procfile" "${DEPLOY_DIR}/"
 fi
 
 # ----- finalize --------------------------------------------------------------
 header "Finalizing deployment"
 
-# Preserve the Node.js installation (lives at the monorepo root, but we need
-# it inside BUILD_DIR so it ends up at /app/.scalingo/node/bin at runtime).
+# Save the Node.js binary, wipe the entire monorepo, then recreate BUILD_DIR
+# from the deploy output.
 mv "${ROOT_DIR}/.scalingo" "/tmp/.scalingo-save" 2>/dev/null || true
 
-# Replace BUILD_DIR contents with the deployed artifact.
-# Scalingo moves BUILD_DIR to /app after compile.
+# cd out of ROOT_DIR before deleting it — rm -rf on the CWD is unreliable
+cd /
+rm -rf "${ROOT_DIR}"
+mkdir -p "${BUILD_DIR}"
+
+mv "/tmp/.scalingo-save" "${BUILD_DIR}/.scalingo" 2>/dev/null || true
+
+# dotglob: make * match hidden files (.next/, .profile.d/, etc.)
 shopt -s dotglob
-rm -rf "${BUILD_DIR:?}"/*
 mv "${DEPLOY_DIR}"/* "${BUILD_DIR}/"
 rm -rf "${DEPLOY_DIR}"
 
-# Restore Node.js inside BUILD_DIR so it's at /app/.scalingo/node/bin at runtime
-mv "/tmp/.scalingo-save" "${BUILD_DIR}/.scalingo" 2>/dev/null || true
+# .profile.d/ scripts are sourced at container boot — use one to put our
+# Node.js binary on PATH.
+mkdir -p "${BUILD_DIR}/.profile.d"
+cat > "${BUILD_DIR}/.profile.d/node.sh" << 'SCRIPT'
+export PATH="/app/.scalingo/node/bin:$PATH"
+SCRIPT
 
 header "Deployment ready"

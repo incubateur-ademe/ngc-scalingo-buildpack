@@ -3,20 +3,23 @@
 #
 # BUILD_DIR is the PROJECT_DIR (e.g. apps/server), now containing only the
 # deployed package + .scalingo/node/.  The Procfile is at its root.
+#
+# PATH is set via .profile.d/node.sh (sourced at container boot), not here.
 
 BUILD_DIR=${1:-}
 
 if [ -f "${BUILD_DIR}/Procfile" ]; then
-  default_process_types="{}"
-else
-  default_process_types="web: npm start"
-fi
-
-cat << EOF
+  cat << EOF
 ---
 addons: []
-config_vars:
-  PATH: /app/.scalingo/node/bin:$PATH
-default_process_types:
-${default_process_types}
+config_vars: {}
 EOF
+else
+  cat << EOF
+---
+addons: []
+config_vars: {}
+default_process_types:
+  web: npm start
+EOF
+fi

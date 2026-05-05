@@ -4,7 +4,9 @@ Custom Scalingo buildpack for deploying pnpm monorepo workspace packages using `
 
 ## How it works
 
-Uses `PROJECT_DIR` to locate the app within the monorepo, navigates up to the monorepo root for `pnpm install` and `pnpm deploy --prod`, then places only the production deployment back into the `PROJECT_DIR`. The final image contains only the deployed package + a Node.js binary.
+Uses `PROJECT_DIR` to locate the app within the monorepo, navigates up to the monorepo root for `pnpm install` and `pnpm deploy --prod`, then wipes the monorepo and recreates `PROJECT_DIR` from only the production deployment. The final image contains only the deployed package + a Node.js binary.
+
+**Node.js version**: read from `engines.node` in the root `package.json`. The buildpack resolves the latest matching patch release (e.g. `"22.14"` → latest `22.14.x`), downloads it, and bundles it in the image.
 
 ## Setup
 
@@ -12,7 +14,7 @@ Each app needs a `.buildpacks` file in its directory pointing to this buildpack,
 
 ```
 # apps/server/.buildpacks (and apps/site/.buildpacks)
-https://github.com/johangirod/ngc-scalingo-buildpack
+https://github.com/incubateur-ademe/ngc-scalingo-buildpack
 ```
 
 ```bash
@@ -26,7 +28,7 @@ No other environment variables are needed — the buildpack reads the package na
 
 Each app must have a `Procfile` in its `PROJECT_DIR`:
 
-- **Server**: `web: NODE_OPTIONS=--max-old-space-size=8192 node dist/src/index.js`
+- **Server**: `web:  node dist/src/index.js`
 - **Site**: `web: node .next/standalone/apps/site/server.js`
 
 ## Testing locally
