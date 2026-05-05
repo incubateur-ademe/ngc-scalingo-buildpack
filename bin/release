@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# bin/release <build-dir>
+#
+# BUILD_DIR is the PROJECT_DIR (e.g. apps/server), now containing only the
+# deployed package + .scalingo/node/.  The Procfile is at its root.
+
+BUILD_DIR=${1:-}
+
+if [ -f "${BUILD_DIR}/Procfile" ]; then
+  default_process_types="{}"
+else
+  default_process_types="web: npm start"
+fi
+
+cat << EOF
+---
+addons: []
+config_vars:
+  PATH: /app/.scalingo/node/bin:$PATH
+default_process_types:
+${default_process_types}
+EOF

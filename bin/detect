@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# bin/detect <build-dir>
+#
+# The buildpack is explicitly selected via .buildpacks, so detection always
+# passes.
+
+echo "ngc-pnpm"
+exit 0

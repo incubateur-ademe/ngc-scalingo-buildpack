@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+#
+# compile — Build a pnpm monorepo workspace package for Scalingo deployment.
+#
+# BUILD_DIR is the PROJECT_DIR (e.g. apps/server).  We navigate up to the
+# monorepo root for pnpm operations, then deploy back into BUILD_DIR.
+#
+# Usage: bin/compile <BUILD_DIR> <CACHE_DIR> <ENV_DIR>
+
+set -o errexit
+set -o pipefail
+
+BUILD_DIR="${1:-}"
+CACHE_DIR="${2:-}"
+ENV_DIR="${3:-}"
+
+# ----- helpers ---------------------------------------------------------------
+
+export_env_dir() {
+  local env_dir="${1}"
+  if [ -d "${env_dir}" ]; then
+    pushd "${env_dir}" >/dev/null
+    for e in *; do
+      [ -e "${e}" ] || continue
+      export "${e}=$(cat "${e}")"
+    done
+    popd >/dev/null
+  fi
+}
+
+indent() {
+  sed -u 's/^/       /'
+}
+
+header() {
+  echo "-----> ${*}"
+}
+
+# Resolve the monorepo root by walking up from BUILD_DIR until we find
+# pnpm-workspace.yaml.
+find_root() {
+  local dir="${1}"
+  while [ "${dir}" != "/" ]; do
+    if [ -f "${dir}/pnpm-workspace.yaml" ]; then
+      echo "${dir}"
+      return 0
+    fi
+    dir=$(dirname "${dir}")
+  done
+  return 1
+}
+
+# ----- export env vars -------------------------------------------------------
+export_env_dir "${ENV_DIR}"
+
+# ----- resolve directories ---------------------------------------------------
+
+ROOT_DIR=$(find_root "${BUILD_DIR}")
+if [ -z "${ROOT_DIR}" ]; then
+  header "ERROR: could not find pnpm-workspace.yaml above ${BUILD_DIR}"
+  exit 1
+fi
+
+# Read the workspace package name from the app's package.json
+PNPM_FILTER=$(node -e "console.log(require('${BUILD_DIR}/package.json').name)" 2>/dev/null || echo "")
+if [ -z "${PNPM_FILTER}" ]; then
+  header "ERROR: could not read package name from ${BUILD_DIR}/package.json"
+  exit 1
+fi
+
+header "Deploying workspace package: ${PNPM_FILTER}"
+
+# ----- install Node.js -------------------------------------------------------
+# Read the required version from the root package.json and install it.
+
+NODE_VERSION=$(grep -oP '"node"\s*:\s*"\K[^"]+' "${ROOT_DIR}/package.json" 2>/dev/null | head -1)
+NODE_MAJOR=$(echo "${NODE_VERSION:-22}" | grep -oP '^\d+')
+NODE_DIR="${ROOT_DIR}/.scalingo/node"
+
+if [ ! -f "${NODE_DIR}/bin/node" ]; then
+  header "Installing Node.js ${NODE_MAJOR}.x"
+  mkdir -p "${NODE_DIR}"
+
+  NODE_LATEST=$(curl -sSf --retry 3 "https://nodejs.org/download/release/latest-v${NODE_MAJOR}.x/SHASUMS256.txt" 2>/dev/null | head -1 | grep -oP 'v\K[\d.]+' || echo "")
+  if [ -z "${NODE_LATEST}" ]; then
+    echo "       Could not resolve latest Node.js v${NODE_MAJOR}.x — using system node"
+  else
+    echo "       Downloading Node.js ${NODE_LATEST}..."
+    curl -sSf --retry 3 --connect-timeout 10 \
+      "https://nodejs.org/dist/v${NODE_LATEST}/node-v${NODE_LATEST}-linux-x64.tar.gz" \
+      | tar xz --strip-components=1 -C "${NODE_DIR}" 2>&1 | indent
+    echo "       Node.js $( "${NODE_DIR}/bin/node" --version ) installed"
+  fi
+fi
+
+export PATH="${NODE_DIR}/bin:${PATH}"
+
+# ----- install pnpm ----------------------------------------------------------
+header "Installing pnpm"
+
+corepack enable pnpm 2>&1 | indent
+echo "       pnpm $(pnpm --version)"
+
+# ----- install dependencies --------------------------------------------------
+header "Installing dependencies"
+
+cd "${ROOT_DIR}"
+pnpm install --frozen-lockfile 2>&1 | indent
+
+# ----- build -----------------------------------------------------------------
+header "Building application"
+
+pnpm --filter="${PNPM_FILTER}" run build 2>&1 | indent
+
+# ----- deploy (production-only, self-contained) ------------------------------
+header "Creating production deployment (pnpm deploy)"
+
+DEPLOY_DIR="/tmp/pnpm-deploy"
+rm -rf "${DEPLOY_DIR}"
+mkdir -p "${DEPLOY_DIR}"
+
+pnpm --filter="${PNPM_FILTER}" --prod deploy "${DEPLOY_DIR}" 2>&1 | indent
+
+# ----- copy build artifacts --------------------------------------------------
+# pnpm deploy respects .gitignore, so dist/ and .next/ are excluded.
+# BUILD_DIR is the source package directory (e.g. apps/server).
+
+header "Copying build artifacts"
+
+# dist/  (TypeScript output — server)
+if [ -d "${BUILD_DIR}/dist" ]; then
+  echo "       dist/"
+  cp -r "${BUILD_DIR}/dist" "${DEPLOY_DIR}/"
+fi
+
+# .next/ (Next.js output — site)
+if [ -d "${BUILD_DIR}/.next" ]; then
+  echo "       .next/"
+  cp -r "${BUILD_DIR}/.next" "${DEPLOY_DIR}/"
+fi
+
+# ----- finalize --------------------------------------------------------------
+header "Finalizing deployment"
+
+# Preserve the Node.js installation (lives at the monorepo root, but we need
+# it inside BUILD_DIR so it ends up at /app/.scalingo/node/bin at runtime).
+mv "${ROOT_DIR}/.scalingo" "/tmp/.scalingo-save" 2>/dev/null || true
+
+# Replace BUILD_DIR contents with the deployed artifact.
+# Scalingo moves BUILD_DIR to /app after compile.
+shopt -s dotglob
+rm -rf "${BUILD_DIR:?}"/*
+mv "${DEPLOY_DIR}"/* "${BUILD_DIR}/"
+rm -rf "${DEPLOY_DIR}"
+
+# Restore Node.js inside BUILD_DIR so it's at /app/.scalingo/node/bin at runtime
+mv "/tmp/.scalingo-save" "${BUILD_DIR}/.scalingo" 2>/dev/null || true
+
+header "Deployment ready"
