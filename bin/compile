@@ -132,7 +132,7 @@ else
   # Regular Node app — use pnpm deploy for production-only dependencies.
   header "Creating production deployment (pnpm deploy)"
 
-  pnpm --filter="${PNPM_FILTER}" --prod deploy "${DEPLOY_DIR}" 2>&1 | indent
+  pnpm --filter="${PNPM_FILTER}" --prod deploy --inject-workspace-packages "${DEPLOY_DIR}" 2>&1 | indent
 
   # pnpm deploy leaves a content-addressable store (.local) and build caches
   # (.cache) inside the deploy output.  They're not needed at runtime.
