@@ -136,6 +136,12 @@ else
   # Cf https://github.com/orgs/pnpm/discussions/9015 & https://github.com/orgs/pnpm/discussions/3938#discussioncomment-12050478
   pnpm --filter="${PNPM_FILTER}" --prod deploy --legacy "${DEPLOY_DIR}" 2>&1 | indent
 
+  # pnpm deploy filters out directories in .gitignore (e.g. .next/).
+  # Copy the build output back — it was produced during the build step.
+  if [ -d "${BUILD_DIR}/.next" ]; then
+    cp -r "${BUILD_DIR}/.next" "${DEPLOY_DIR}/"
+  fi
+
   # pnpm deploy leaves a content-addressable store (.local) and build caches
   # (.cache) inside the deploy output.  They're not needed at runtime.
   rm -rf "${DEPLOY_DIR}/.local" "${DEPLOY_DIR}/.cache"
