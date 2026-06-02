@@ -128,12 +128,8 @@ header "Creating production deployment (pnpm deploy)"
 # must hoist them or they remain isolated and unresolvable at runtime.
 DEPLOY_ARGS="--filter=${PNPM_FILTER} --prod deploy --legacy"
 if [ -d "${BUILD_DIR}/.next" ]; then
-  echo "Next.js detected — enabling shamefully-hoist" | indent
   DEPLOY_ARGS="--config.shamefully-hoist=true ${DEPLOY_ARGS}"
-else
-  echo "No .next/ directory — standard deploy" | indent
 fi
-echo "Deploy command: pnpm ${DEPLOY_ARGS} <deploy-dir>" | indent
 
 # Legacy deploy, because injected package in development are awful.
 # Cf https://github.com/orgs/pnpm/discussions/9015 & https://github.com/orgs/pnpm/discussions/3938#discussioncomment-12050478
@@ -150,22 +146,6 @@ fi
 # pnpm deploy leaves a content-addressable store (.local) and build caches
 # (.cache) inside the deploy output.  They're not needed at runtime.
 rm -rf "${DEPLOY_DIR}/.local" "${DEPLOY_DIR}/.cache"
-
-# Verify that transitive dependencies are resolvable (sanity check for
-# shamefully-hoist).  require-in-the-middle is a deep transitive dep of
-# @sentry/nextjs — if missing, turbopack chunks will crash at boot.
-if [ -d "${BUILD_DIR}/.next" ]; then
-  if node -e "require.resolve('require-in-the-middle', {paths: ['${DEPLOY_DIR}']})" 2>/dev/null; then
-    echo "  ✓ require-in-the-middle resolved" | indent
-  else
-    echo "  ✗ WARNING: require-in-the-middle NOT found" | indent
-  fi
-  if node -e "require.resolve('@sentry/node', {paths: ['${DEPLOY_DIR}']})" 2>/dev/null; then
-    echo "  ✓ @sentry/node resolved" | indent
-  else
-    echo "  ✗ WARNING: @sentry/node NOT found" | indent
-  fi
-fi
 
 
 # ----- finalize --------------------------------------------------------------
