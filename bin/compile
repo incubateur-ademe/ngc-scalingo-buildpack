@@ -123,16 +123,17 @@ mkdir -p "${DEPLOY_DIR}"
 
 header "Creating production deployment (pnpm deploy)"
 
-# Next.js (turbopack) generates chunks outside .pnpm/ that directly
-# reference transitive dependencies.  Without hoisting, those deps are
-# isolated in .pnpm/node_modules/ and unresolvable at runtime.
+# Build the pnpm deploy args. Next.js (turbopack) generates chunks
+# outside .pnpm/ that directly reference transitive dependencies — we
+# must hoist them or they remain isolated and unresolvable at runtime.
+DEPLOY_ARGS="--filter=${PNPM_FILTER} --prod deploy --legacy"
 if [ -d "${BUILD_DIR}/.next" ]; then
-  export PNPM_SHAMEFULLY_HOIST=true
+  DEPLOY_ARGS="--config.shamefully-hoist=true ${DEPLOY_ARGS}"
 fi
 
 # Legacy deploy, because injected package in development are awful.
 # Cf https://github.com/orgs/pnpm/discussions/9015 & https://github.com/orgs/pnpm/discussions/3938#discussioncomment-12050478
-pnpm --filter="${PNPM_FILTER}" --prod deploy --legacy "${DEPLOY_DIR}" 2>&1 | indent
+pnpm ${DEPLOY_ARGS} "${DEPLOY_DIR}" 2>&1 | indent
 
 # pnpm deploy filters out directories in .gitignore (e.g. .next/).
 # Copy the build output back — it was produced during the build step.
