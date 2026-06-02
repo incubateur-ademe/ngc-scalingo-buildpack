@@ -141,8 +141,10 @@ pnpm ${DEPLOY_ARGS} "${DEPLOY_DIR}" 2>&1 | indent
 
 # pnpm deploy filters out directories in .gitignore (e.g. .next/).
 # Copy the build output back — it was produced during the build step.
+# -L dereferences symlinks: turbopack creates .next/node_modules/<hash>/
+# symlinks that point to build-machine paths; they must be resolved.
 if [ -d "${BUILD_DIR}/.next" ]; then
-  cp -r "${BUILD_DIR}/.next" "${DEPLOY_DIR}/"
+  cp -rL "${BUILD_DIR}/.next" "${DEPLOY_DIR}/"
 fi
 
 # pnpm deploy leaves a content-addressable store (.local) and build caches
