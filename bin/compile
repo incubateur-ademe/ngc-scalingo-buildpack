@@ -121,36 +121,29 @@ DEPLOY_DIR="/tmp/pnpm-deploy"
 rm -rf "${DEPLOY_DIR}"
 mkdir -p "${DEPLOY_DIR}"
 
-if [ -d "${BUILD_DIR}/.next/standalone" ]; then
-  # Next.js standalone mode — the build already produced a self-contained
-  # output with its own node_modules.  No pnpm deploy needed.
-  # In a monorepo, node_modules lives at .next/standalone/node_modules/,
-  # not inside the app subdirectory — copy the full tree.
-  header "Using Next.js standalone output"
-  cp -r "${BUILD_DIR}/.next/standalone"/. "${DEPLOY_DIR}/"
-else
-  # Regular Node app — use pnpm deploy for production-only dependencies.
-  header "Creating production deployment (pnpm deploy)"
+header "Creating production deployment (pnpm deploy)"
 
-  # Legacy deploy, because injected package in development are awful.
-  # Cf https://github.com/orgs/pnpm/discussions/9015 & https://github.com/orgs/pnpm/discussions/3938#discussioncomment-12050478
-  pnpm --filter="${PNPM_FILTER}" --prod deploy --legacy "${DEPLOY_DIR}" 2>&1 | indent
-
-  # pnpm deploy filters out directories in .gitignore (e.g. .next/).
-  # Copy the build output back — it was produced during the build step.
-  if [ -d "${BUILD_DIR}/.next" ]; then
-    cp -r "${BUILD_DIR}/.next" "${DEPLOY_DIR}/"
-  fi
-
-  # pnpm deploy leaves a content-addressable store (.local) and build caches
-  # (.cache) inside the deploy output.  They're not needed at runtime.
-  rm -rf "${DEPLOY_DIR}/.local" "${DEPLOY_DIR}/.cache"
+# Next.js (turbopack) generates chunks outside .pnpm/ that directly
+# reference transitive dependencies.  Without hoisting, those deps are
+# isolated in .pnpm/node_modules/ and unresolvable at runtime.
+if [ -d "${BUILD_DIR}/.next" ]; then
+  export PNPM_SHAMEFULLY_HOIST=true
 fi
 
-# The standalone output doesn't include the Procfile — copy it from the source.
-if [ -f "${BUILD_DIR}/Procfile" ] && [ ! -f "${DEPLOY_DIR}/Procfile" ]; then
-  cp "${BUILD_DIR}/Procfile" "${DEPLOY_DIR}/"
+# Legacy deploy, because injected package in development are awful.
+# Cf https://github.com/orgs/pnpm/discussions/9015 & https://github.com/orgs/pnpm/discussions/3938#discussioncomment-12050478
+pnpm --filter="${PNPM_FILTER}" --prod deploy --legacy "${DEPLOY_DIR}" 2>&1 | indent
+
+# pnpm deploy filters out directories in .gitignore (e.g. .next/).
+# Copy the build output back — it was produced during the build step.
+if [ -d "${BUILD_DIR}/.next" ]; then
+  cp -r "${BUILD_DIR}/.next" "${DEPLOY_DIR}/"
 fi
+
+# pnpm deploy leaves a content-addressable store (.local) and build caches
+# (.cache) inside the deploy output.  They're not needed at runtime.
+rm -rf "${DEPLOY_DIR}/.local" "${DEPLOY_DIR}/.cache"
+
 
 # ----- finalize --------------------------------------------------------------
 header "Finalizing deployment"
