@@ -149,6 +149,22 @@ fi
 # (.cache) inside the deploy output.  They're not needed at runtime.
 rm -rf "${DEPLOY_DIR}/.local" "${DEPLOY_DIR}/.cache"
 
+# Verify that transitive dependencies are resolvable (sanity check for
+# shamefully-hoist).  require-in-the-middle is a deep transitive dep of
+# @sentry/nextjs — if missing, turbopack chunks will crash at boot.
+if [ -d "${BUILD_DIR}/.next" ]; then
+  if node -e "require.resolve('require-in-the-middle', {paths: ['${DEPLOY_DIR}']})" 2>/dev/null; then
+    echo "  ✓ require-in-the-middle resolved" | indent
+  else
+    echo "  ✗ WARNING: require-in-the-middle NOT found" | indent
+  fi
+  if node -e "require.resolve('@sentry/node', {paths: ['${DEPLOY_DIR}']})" 2>/dev/null; then
+    echo "  ✓ @sentry/node resolved" | indent
+  else
+    echo "  ✗ WARNING: @sentry/node NOT found" | indent
+  fi
+fi
+
 
 # ----- finalize --------------------------------------------------------------
 header "Finalizing deployment"
